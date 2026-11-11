@@ -7,7 +7,7 @@
 
 (defstruct torrent-file path length pieces-root piece-hashes source)
 (defstruct (torrent (:constructor %make-torrent))
-  metainfo infohash name announce piece-length files piece-layers)
+  metainfo infohash name announce piece-length files piece-layers content-id)
 
 (defun sha256 (&rest vectors)
   (ironclad:digest-sequence
@@ -130,8 +130,11 @@
 (defun joined-hashes (hashes)
   (apply #'concatenate '(vector (unsigned-byte 8)) (coerce hashes 'list)))
 
-(defun make-torrent (input &key name (piece-length 262144) announce)
-  "Create canonical BitTorrent v2 metainfo for INPUT, a pathname or pathname list."
+(defun make-torrent (input &key name (piece-length 262144) announce content-id)
+  "Create canonical BitTorrent v2 metainfo for INPUT, a pathname or pathname list.
+CONTENT-ID, when given, is an opaque external identifier for the content (such as
+an OCI digest).  It is stored in the info dictionary -- so it is covered by the
+infohash -- binding the swarm's identity to the content's identity."
   (unless (valid-piece-length-p piece-length)
     (error "Piece length must be a power of two and at least 16384"))
   (let* ((pathnames (mapcar #'pathname (if (listp input) input (list input))))
@@ -146,8 +149,9 @@
          (file-tree (make-file-tree files)))
     (let* (
            (info (bencode-dictionary
-                  (list (cons "file tree" file-tree) (cons "meta version" 2)
-                        (cons "name" name) (cons "piece length" piece-length))))
+                  (append (when content-id (list (cons "content id" content-id)))
+                          (list (cons "file tree" file-tree) (cons "meta version" 2)
+                                (cons "name" name) (cons "piece length" piece-length)))))
            (layers (bencode-dictionary
                     (loop for file in files
                           when (> (torrent-file-length file) piece-length)
@@ -159,7 +163,8 @@
            (metainfo (encode-bencode root-map)))
       (%make-torrent :metainfo metainfo :infohash (sha256 (encode-bencode info))
                     :name name :announce announce :piece-length piece-length
-                    :files files :piece-layers layers))))
+                    :files files :piece-layers layers
+                    :content-id (and content-id (utf8 (as-octets content-id)))))))
 
 (defun utf8 (bytes) (trivial-utf-8:utf-8-bytes-to-string bytes))
 
@@ -200,6 +205,7 @@
          (piece-length (and info (bencode-value info "piece length")))
          (name (and info (utf8 (bencode-value info "name"))))
          (files (and info (collect-file-tree (bencode-value info "file tree"))))
+         (content-bytes (and info (bencode-value info "content id")))
          (layers (bencode-value root "piece layers"))
          (announce-bytes (bencode-value root "announce")))
     (unless (and (equalp metainfo (encode-bencode root)) (= version 2)
@@ -210,4 +216,46 @@
                   :infohash (sha256 (encode-bencode info))
                   :name name :announce (and announce-bytes (utf8 announce-bytes))
                   :piece-length piece-length :files files
-                  :piece-layers layers)))
+                  :piece-layers layers
+                  :content-id (and content-bytes (utf8 content-bytes)))))
+
+;;; Single-blob torrents: one content-addressed file, optionally bound to an
+;;; external content identifier.  These are thin conveniences over the general
+;;; engine -- a blob torrent is simply a single-file TORRENT.
+
+(defun make-blob-torrent (blob &key (piece-length 262144) content-id name)
+  "Build canonical BEP 52 metainfo for one BLOB (a pathname) as a single-file
+torrent.  CONTENT-ID, when given, is an opaque identifier for the blob's content
+(such as an OCI digest), carried in the info dictionary and so covered by the
+infohash.  Returns a TORRENT with exactly one file."
+  (make-torrent blob :piece-length piece-length :content-id content-id
+                     :name (or name (and content-id (princ-to-string content-id)))))
+
+(defun blob-torrent-p (object)
+  "True when OBJECT is a TORRENT describing exactly one file, so the other
+blob-torrent accessors apply."
+  (and (torrent-p object) (= 1 (length (torrent-files object)))))
+
+(defun blob-torrent-file (torrent)
+  "The single TORRENT-FILE of a blob torrent; an error if TORRENT is multi-file."
+  (unless (blob-torrent-p torrent) (error "Not a single-blob torrent"))
+  (first (torrent-files torrent)))
+
+(defun blob-torrent-length (torrent)
+  "The byte length of the blob."
+  (torrent-file-length (blob-torrent-file torrent)))
+
+(defun blob-torrent-content-id (torrent)
+  "The external content identifier bound to TORRENT, or NIL when it carries none."
+  (torrent-content-id torrent))
+
+(defun parse-blob-metainfo (metainfo)
+  "Parse canonical METAINFO octets into a blob torrent, validating that it is
+single-file and reconstructing its verified piece geometry.  Signals an error on
+malformed or multi-file input.  The bound content id, if any, is available
+through BLOB-TORRENT-CONTENT-ID."
+  (let ((torrent (parse-metainfo metainfo)))
+    (unless (blob-torrent-p torrent)
+      (error "Expected a single-blob torrent, found ~D files"
+             (length (torrent-files torrent))))
+    torrent))

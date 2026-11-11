@@ -11,8 +11,15 @@
    #:encode-bencode
    #:make-torrent
    #:parse-metainfo
+   #:make-blob-torrent
+   #:parse-blob-metainfo
+   #:blob-torrent-p
+   #:blob-torrent-file
+   #:blob-torrent-length
+   #:blob-torrent-content-id
    #:torrent
    #:torrent-announce
+   #:torrent-content-id
    #:torrent-files
    #:torrent-infohash
    #:torrent-metainfo
