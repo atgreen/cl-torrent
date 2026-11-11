@@ -107,6 +107,44 @@
           (fill (aref received index) 1))))
     store))
 
+(defun open-blob-store (torrent pathname &key resume-p)
+  "Create or resume a single-blob piece store that writes the whole blob to
+PATHNAME, instead of deriving a destination under a root from the torrent name.
+TORRENT must be a single-blob torrent.  The store is used with ACCEPT-BLOCK,
+PIECE-STORE-COMPLETE-P and COMPLETED-PIECES exactly like OPEN-PIECE-STORE's."
+  (unless (blob-torrent-p torrent)
+    (error "open-blob-store requires a single-blob torrent"))
+  (let* ((file (blob-torrent-file torrent))
+         (piece-length (torrent-piece-length torrent))
+         (pieces (let ((references nil))
+                   (loop for local below (length (torrent-file-piece-hashes file))
+                         for offset = (* local piece-length)
+                         for size = (min piece-length (- (torrent-file-length file) offset))
+                         do (push (make-piece-reference
+                                   :file file :pathname pathname :file-piece local
+                                   :offset offset :size size
+                                   :expected-hash (aref (torrent-file-piece-hashes file) local))
+                                  references))
+                   (coerce (nreverse references) 'vector)))
+         (completed (make-array (length pieces) :element-type 'bit :initial-element 0))
+         (received (map 'vector
+                        (lambda (reference)
+                          (make-array (ceiling (piece-reference-size reference)
+                                               +peer-block-length+)
+                                      :element-type 'bit :initial-element 0))
+                        pieces))
+         (store (%make-piece-store :torrent torrent
+                                   :root (uiop:pathname-directory-pathname pathname)
+                                   :pieces pieces :completed completed
+                                   :received-blocks received)))
+    (ensure-sized-file pathname (torrent-file-length file) resume-p)
+    (when resume-p
+      (dotimes (index (length pieces))
+        (when (piece-valid-p store index)
+          (setf (aref completed index) 1)
+          (fill (aref received index) 1))))
+    store))
+
 (defun completed-pieces (store)
   (copy-seq (piece-store-completed store)))
 

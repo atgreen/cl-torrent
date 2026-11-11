@@ -25,6 +25,8 @@
    #:torrent-metainfo
    #:torrent-name
    #:torrent-piece-length
+   #:torrent-piece-count
+   #:torrent-piece-size
    #:decode-peer-handshake
    #:decode-peer-message
    #:download-from-peer-stream
@@ -49,6 +51,7 @@
    #:tracker-response-warning
    #:tracker-response-peers
    #:open-piece-store
+   #:open-blob-store
    #:accept-block
    #:completed-pieces
    #:piece-store-complete-p
