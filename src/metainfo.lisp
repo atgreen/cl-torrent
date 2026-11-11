@@ -79,11 +79,12 @@
                  directory parent)))
       (uiop:pathname-directory-pathname (first pathnames))))
 
-(defun make-file-record (pathname root piece-length single-p)
+(defun make-file-record (pathname root piece-length single-p &optional filename)
   (multiple-value-bind (length root-hash pieces) (file-merkle-tree pathname piece-length)
     (make-torrent-file
-     :path (if single-p (list (file-namestring pathname))
-               (pathname-components pathname root))
+     :path (cond (filename (list filename))
+                 (single-p (list (file-namestring pathname)))
+                 (t (pathname-components pathname root)))
      :length length :pieces-root root-hash :piece-hashes pieces :source pathname)))
 
 (defun file-properties (file)
@@ -130,11 +131,14 @@
 (defun joined-hashes (hashes)
   (apply #'concatenate '(vector (unsigned-byte 8)) (coerce hashes 'list)))
 
-(defun make-torrent (input &key name (piece-length 262144) announce content-id)
+(defun make-torrent (input &key name (piece-length 262144) announce content-id filename)
   "Create canonical BitTorrent v2 metainfo for INPUT, a pathname or pathname list.
 CONTENT-ID, when given, is an opaque external identifier for the content (such as
 an OCI digest).  It is stored in the info dictionary -- so it is covered by the
-infohash -- binding the swarm's identity to the content's identity."
+infohash -- binding the swarm's identity to the content's identity.  FILENAME,
+for a single-file torrent, is the name the file carries inside the torrent's file
+tree, decoupled from the on-disk pathname -- so a content-addressed blob held in a
+temporary file can be named by its content identity."
   (unless (valid-piece-length-p piece-length)
     (error "Piece length must be a power of two and at least 16384"))
   (let* ((pathnames (mapcar #'pathname (if (listp input) input (list input))))
@@ -142,7 +146,8 @@ infohash -- binding the swarm's identity to the content's identity."
          (name (or name (if single-p (file-namestring (first pathnames)) "torrent")))
          (root (common-root pathnames (and (not single-p) name)))
          (files (sort (mapcar (lambda (path)
-                                (make-file-record path root piece-length single-p))
+                                (make-file-record path root piece-length single-p
+                                                  (and single-p filename)))
                               pathnames)
                       #'string< :key (lambda (file)
                                        (format nil "~{~A~^/~}" (torrent-file-path file)))))
@@ -227,9 +232,15 @@ infohash -- binding the swarm's identity to the content's identity."
   "Build canonical BEP 52 metainfo for one BLOB (a pathname) as a single-file
 torrent.  CONTENT-ID, when given, is an opaque identifier for the blob's content
 (such as an OCI digest), carried in the info dictionary and so covered by the
-infohash.  Returns a TORRENT with exactly one file."
-  (make-torrent blob :piece-length piece-length :content-id content-id
-                     :name (or name (and content-id (princ-to-string content-id)))))
+infohash.  The torrent's NAME -- defaulting to the content id, else the blob's
+on-disk filename -- is also the name the single file carries inside the file
+tree, so a blob staged in a temporary file is identified by its content, not its
+scratch path.  Returns a TORRENT with exactly one file."
+  (let ((name (or name
+                  (and content-id (princ-to-string content-id))
+                  (file-namestring (pathname blob)))))
+    (make-torrent blob :piece-length piece-length :content-id content-id
+                       :name name :filename name)))
 
 (defun blob-torrent-p (object)
   "True when OBJECT is a TORRENT describing exactly one file, so the other

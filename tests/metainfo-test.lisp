@@ -44,3 +44,35 @@
     (let ((source (merge-pathnames "tiny" root)))
       (write-test-file source (octets "tiny"))
       (signals error (make-torrent source :piece-length 10000)))))
+
+(test blob-torrent-is-named-by-content-not-its-scratch-path
+  ;; A content-addressed blob is staged in a scratch file whose on-disk name is
+  ;; irrelevant; the torrent must identify it by its content id, in both the info
+  ;; name and the single file-tree entry, and survive a metainfo round-trip.
+  (with-test-directory (root)
+    (let ((source (merge-pathnames "scratch-0a1b2c.tmp" root)))
+      (write-test-file source (make-array 40000 :element-type '(unsigned-byte 8)
+                                                 :initial-element 7))
+      (let* ((torrent (make-blob-torrent source :piece-length 16384
+                                                :content-id "sha256:feedface"))
+             (parsed (parse-blob-metainfo (torrent-metainfo torrent))))
+        (is (blob-torrent-p torrent))
+        (is (string= "sha256:feedface" (torrent-name torrent)))
+        (is (string= "sha256:feedface" (blob-torrent-content-id parsed)))
+        (is (equalp '("sha256:feedface")
+                    (cl-torrent::torrent-file-path (blob-torrent-file parsed))))
+        (is (= 40000 (blob-torrent-length parsed)))
+        (is (equalp (torrent-metainfo torrent) (torrent-metainfo parsed)))))))
+
+(test blob-torrent-name-overrides-the-content-id
+  ;; An explicit name wins over the content id for both the torrent name and the
+  ;; in-tree filename, while the content id is still carried for binding.
+  (with-test-directory (root)
+    (let ((source (merge-pathnames "scratch.tmp" root)))
+      (write-test-file source (octets "small blob"))
+      (let ((torrent (make-blob-torrent source :piece-length 16384
+                                               :content-id "sha256:abc123"
+                                               :name "deadbeef")))
+        (is (string= "deadbeef" (torrent-name torrent)))
+        (is (equalp '("deadbeef") (cl-torrent::torrent-file-path (blob-torrent-file torrent))))
+        (is (string= "sha256:abc123" (blob-torrent-content-id torrent)))))))
